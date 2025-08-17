@@ -7,7 +7,9 @@ app = Flask(__name__)
 
 # Reusable yt-dlp options
 YDL_OPTS = {
-    'format': 'best[ext=mp4][vcodec!=h265][acodec!=opus]/best[ext=mp4]/best', # Prioritize compatible mp4
+    # This is the new line. It forces the request to originate from an IPv4 address.
+    'source_address': '0.0.0.0', 
+    'format': 'best[ext=mp4][vcodec!=h265][acodec!=opus]/best[ext=mp4]/best',
     'quiet': True,
 }
 
@@ -21,11 +23,8 @@ def get_video_info():
     app.logger.info(f"Received request for URL: {video_url}")
 
     try:
-        # Use yt-dlp to extract information without downloading
         with yt_dlp.YoutubeDL(YDL_OPTS) as ydl:
             info = ydl.extract_info(video_url, download=False)
-            
-            # The 'url' key contains the direct download link
             download_url = info.get('url')
             
             if not download_url:
@@ -37,16 +36,16 @@ def get_video_info():
                 "thumbnail_url": info.get('thumbnail', ''),
                 "download_url": download_url
             }
-
             app.logger.info(f"Successfully found stream for '{info.get('title')}'")
             return jsonify(video_data)
 
     except yt_dlp.utils.DownloadError as e:
-        # Handle specific yt-dlp errors (e.g., video unavailable)
         app.logger.error(f"yt-dlp DownloadError for {video_url}: {str(e)}")
+        # Send a user-friendly part of the error back
+        if 'confirm you’re not a bot' in str(e):
+             return jsonify({"error": "Server is being blocked by YouTube's anti-bot system."}), 503
         return jsonify({"error": "Video is unavailable or private."}), 500
     except Exception as e:
-        # Handle all other errors
         app.logger.error(f"An unexpected exception occurred for {video_url}: {str(e)}")
         return jsonify({"error": "An unexpected server error occurred."}), 500
 

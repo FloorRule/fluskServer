@@ -1,53 +1,46 @@
-from flask import Flask, request, jsonify
-import yt_dlp
-import logging
+from flask import Flask, request, send_file, jsonify
+import pydub
+import io
 
-logging.basicConfig(level=logging.INFO)
 app = Flask(__name__)
 
-# Reusable yt-dlp options
-YDL_OPTS = {
-    # This is the new line. It forces the request to originate from an IPv4 address.
-    'source_address': '0.0.0.0', 
-    'format': 'best[ext=mp4][vcodec!=h265][acodec!=opus]/best[ext=mp4]/best',
-    'quiet': True,
-}
+@app.route('/convert-to-mp3', methods=['POST'])
+def convert_audio():
+    # --- 1. Get the raw M4A data from the request body ---
+    m4a_bytes = request.data
+    if not m4a_bytes:
+        return jsonify({"error": "Request body is empty. M4A data is required."}), 400
 
-@app.route('/get_video_info', methods=['GET'])
-def get_video_info():
-    video_url = request.args.get('url')
-    if not video_url:
-        app.logger.error("URL parameter is missing from request.")
-        return jsonify({"error": "URL parameter is missing"}), 400
-
-    app.logger.info(f"Received request for URL: {video_url}")
+    print(f"Received {len(m4a_bytes)} bytes of M4A data for conversion.")
 
     try:
-        with yt_dlp.YoutubeDL(YDL_OPTS) as ydl:
-            info = ydl.extract_info(video_url, download=False)
-            download_url = info.get('url')
-            
-            if not download_url:
-                app.logger.warning(f"yt-dlp did not return a download URL for {video_url}")
-                return jsonify({"error": "Could not find a direct download URL"}), 404
+        # --- 2. Convert the audio using pydub ---
+        # Use BytesIO to treat the received bytes as an in-memory file
+        m4a_in_memory_file = io.BytesIO(m4a_bytes)
 
-            video_data = {
-                "title": info.get('title', 'Unknown Title'),
-                "thumbnail_url": info.get('thumbnail', ''),
-                "download_url": download_url
-            }
-            app.logger.info(f"Successfully found stream for '{info.get('title')}'")
-            return jsonify(video_data)
+        print("Converting M4A to MP3 in memory...")
+        sound = pydub.AudioSegment.from_file(m4a_in_memory_file, format="m4a")
 
-    except yt_dlp.utils.DownloadError as e:
-        app.logger.error(f"yt-dlp DownloadError for {video_url}: {str(e)}")
-        # Send a user-friendly part of the error back
-        if 'confirm you’re not a bot' in str(e):
-             return jsonify({"error": "Server is being blocked by YouTube's anti-bot system."}), 503
-        return jsonify({"error": "Video is unavailable or private."}), 500
+        # Create another in-memory file for the MP3 output
+        mp3_in_memory_file = io.BytesIO()
+        sound.export(mp3_in_memory_file, format="mp3", bitrate="192k")
+        mp3_in_memory_file.seek(0)  # Rewind to the beginning
+
+        print("Conversion complete. Sending MP3 data back.")
+        
+        # --- 3. Send the MP3 data back to the Unity client ---
+        return send_file(
+            mp3_in_memory_file,
+            mimetype='audio/mpeg',
+            as_attachment=True,
+            download_name='audio.mp3'
+        )
+    except pydub.exceptions.CouldntDecodeError:
+        print("Error: pydub could not decode the provided audio data.")
+        return jsonify({"error": "Invalid or corrupt M4A data provided."}), 400
     except Exception as e:
-        app.logger.error(f"An unexpected exception occurred for {video_url}: {str(e)}")
-        return jsonify({"error": "An unexpected server error occurred."}), 500
+        print(f"An unexpected error occurred during conversion: {e}")
+        return jsonify({"error": f"An unexpected server error occurred: {e}"}), 500
 
 if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=5000)
+    app.run(debug=True, host='0.0.0.0', port=5000)
